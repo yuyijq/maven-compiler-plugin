@@ -1,6 +1,5 @@
 package org.apache.maven.plugin.compiler;
 
-import java.io.ByteArrayOutputStream;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.OutputStream;
@@ -47,13 +46,10 @@ class Snapshot {
         SourceMapping.Serializer sourceMappingSerializer = new SourceMapping.Serializer();
         File snapshot = new File(statusDir, "snapshot");
         try (OutputStream end = new FileOutputStream(snapshot)) {
-            ByteArrayOutputStream os = new ByteArrayOutputStream(1024);
-            BinaryEncoder encoder = new BinaryEncoder(os);
+            BinaryEncoder encoder = new BinaryEncoder(end);
             classPathEntryMappingSerializer.write(encoder, classPathEntryMapping);
             sourceMappingSerializer.write(encoder, sourceMapping);
             serializer.write(encoder, accumulator.getAnalysis());
-            os.flush();
-            end.write(os.toByteArray());
             end.flush();
         } catch (Exception e) {
             e.printStackTrace();
