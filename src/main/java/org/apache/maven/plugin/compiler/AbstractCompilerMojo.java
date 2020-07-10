@@ -563,7 +563,7 @@ public abstract class AbstractCompilerMojo
     private void captureSnapshot(List<String> sourceRoot, Compiler compiler, File statusDir, List<String> classPathEntries) {
         if (!wormpexIncrementCompile) return;
         File outputDir = getOutputDir(compiler);
-        new Snapshot(outputDir, statusDir, sourceRoot, classPathEntries).capture();
+        new Snapshot(outputDir, statusDir, sourceRoot, classPathEntries, session).capture();
     }
 
     @Override
