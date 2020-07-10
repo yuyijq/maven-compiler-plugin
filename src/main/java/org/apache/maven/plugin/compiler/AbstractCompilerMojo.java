@@ -19,9 +19,7 @@ package org.apache.maven.plugin.compiler;
  * under the License.
  */
 
-import java.io.File;
-import java.io.IOException;
-import java.io.InputStream;
+import java.io.*;
 import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.nio.charset.Charset;
@@ -39,6 +37,10 @@ import java.util.List;
 import java.util.Map;
 import java.util.Properties;
 import java.util.Set;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.zip.ZipFile;
 
 import org.apache.maven.artifact.Artifact;
 import org.apache.maven.artifact.DefaultArtifact;
@@ -99,12 +101,12 @@ public abstract class AbstractCompilerMojo
     protected static final String PS = System.getProperty( "path.separator" );
 
     static final String DEFAULT_SOURCE = "1.7";
-    
+
     static final String DEFAULT_TARGET = "1.7";
-    
+
     // Used to compare with older targets
     static final String MODULE_INFO_TARGET = "1.9";
-    
+
     // ----------------------------------------------------------------------
     // Configurables
     // ----------------------------------------------------------------------
@@ -116,14 +118,14 @@ public abstract class AbstractCompilerMojo
      */
     @Parameter( property = "maven.compiler.failOnError", defaultValue = "true" )
     private boolean failOnError = true;
-    
+
     /**
      * Indicates whether the build will continue even if there are compilation warnings.
      *
      * @since 3.6
      */
     @Parameter( property = "maven.compiler.failOnWarning", defaultValue = "false" )
-    private boolean failOnWarning;  
+    private boolean failOnWarning;
 
     /**
      * Set to <code>true</code> to include debugging information in the compiled class files.
@@ -166,7 +168,7 @@ public abstract class AbstractCompilerMojo
 
     /**
      * <p>The -source argument for the Java compiler.</p>
-     * 
+     *
      * <b>NOTE: </b>Since 3.8.0 the default value has changed from 1.5 to 1.6.
      * Since 3.9.0 the default value has changed from 1.6 to 1.7
      */
@@ -175,7 +177,7 @@ public abstract class AbstractCompilerMojo
 
     /**
      * <p>The -target argument for the Java compiler.</p>
-     * 
+     *
      * <b>NOTE: </b>Since 3.8.0 the default value has changed from 1.5 to 1.6.
      * Since 3.9.0 the default value has changed from 1.6 to 1.7
      */
@@ -184,12 +186,12 @@ public abstract class AbstractCompilerMojo
 
     /**
      * The -release argument for the Java compiler, supported since Java9
-     * 
+     *
      * @since 3.6
      */
     @Parameter( property = "maven.compiler.release" )
     protected String release;
-    
+
     /**
      * The -encoding argument for the Java compiler.
      *
@@ -395,7 +397,7 @@ public abstract class AbstractCompilerMojo
      * This overrules the toolchain selected by the maven-toolchain-plugin.
      * </p>
      * <strong>note:</strong> requires at least Maven 3.3.1
-     * 
+     *
      * @since 3.6
      */
     @Parameter
@@ -473,6 +475,9 @@ public abstract class AbstractCompilerMojo
     @Parameter( defaultValue = "${mojoExecution}", readonly = true, required = true )
     private MojoExecution mojoExecution;
 
+    @Parameter(property = "wormpex.incCompile", defaultValue = "false")
+    private boolean wormpexIncrementCompile = false;
+
     /**
      * file extensions to check timestamp for incremental build
      * <b>default contains only <code>class</code></b>
@@ -507,6 +512,8 @@ public abstract class AbstractCompilerMojo
     @Component
     private ResolutionErrorHandler resolutionErrorHandler;
 
+    private static final List<Future> result = new ArrayList<>();
+
     protected abstract SourceInclusionScanner getSourceInclusionScanner( int staleMillis );
 
     protected abstract SourceInclusionScanner getSourceInclusionScanner( String inputFileEnding );
@@ -518,7 +525,7 @@ public abstract class AbstractCompilerMojo
     protected abstract Map<String, JavaModuleDescriptor> getPathElements();
 
     protected abstract List<String> getCompileSourceRoots();
-    
+
     protected abstract void preparePaths( Set<File> sourceFiles );
 
     protected abstract File getOutputDirectory();
@@ -541,6 +548,23 @@ public abstract class AbstractCompilerMojo
     }
 
     private boolean targetOrReleaseSet;
+
+    private File getOutputDir(Compiler compiler){
+        File outputDirectory;
+        CompilerOutputStyle outputStyle = compiler.getCompilerOutputStyle();
+        if (outputStyle == CompilerOutputStyle.ONE_OUTPUT_FILE_FOR_ALL_INPUT_FILES) {
+            outputDirectory = buildDirectory;
+        } else {
+            outputDirectory = getOutputDirectory();
+        }
+        return outputDirectory;
+    }
+
+    private void captureSnapshot(List<String> sourceRoot, Compiler compiler, File statusDir, List<String> classPathEntries) {
+        if (!wormpexIncrementCompile) return;
+        File outputDir = getOutputDir(compiler);
+        new Snapshot(outputDir, statusDir, sourceRoot, classPathEntries).capture();
+    }
 
     @Override
     public void execute()
@@ -647,7 +671,7 @@ public abstract class AbstractCompilerMojo
         compilerConfiguration.setSourceVersion( getSource() );
 
         compilerConfiguration.setTargetVersion( getTarget() );
-        
+
         compilerConfiguration.setReleaseVersion( getRelease() );
 
         compilerConfiguration.setProc( proc );
@@ -791,7 +815,7 @@ public abstract class AbstractCompilerMojo
                 canUpdateTarget = compiler.canUpdateTarget( compilerConfiguration );
 
                 sources = getCompileSources( compiler, compilerConfiguration );
-                
+
                 preparePaths( sources );
 
                 incrementalBuildHelperRequest = new IncrementalBuildHelperRequest().inputFiles( sources );
@@ -822,41 +846,7 @@ public abstract class AbstractCompilerMojo
         else
         {
             getLog().debug( "useIncrementalCompilation disabled" );
-            
-            Set<File> staleSources;
-            try
-            {
-                staleSources =
-                    computeStaleSources( compilerConfiguration, compiler, getSourceInclusionScanner( staleMillis ) );
 
-                canUpdateTarget = compiler.canUpdateTarget( compilerConfiguration );
-
-                if ( compiler.getCompilerOutputStyle().equals( CompilerOutputStyle.ONE_OUTPUT_FILE_FOR_ALL_INPUT_FILES )
-                    && !canUpdateTarget )
-                {
-                    getLog().info( "RESCANNING!" );
-                    // TODO: This second scan for source files is sub-optimal
-                    String inputFileEnding = compiler.getInputFileEnding( compilerConfiguration );
-
-                    staleSources = computeStaleSources( compilerConfiguration, compiler,
-                                                             getSourceInclusionScanner( inputFileEnding ) );
-                }
-                
-            }
-            catch ( CompilerException e )
-            {
-                throw new MojoExecutionException( "Error while computing stale sources.", e );
-            }
-
-            if ( staleSources.isEmpty() )
-            {
-                getLog().info( "Nothing to compile - all classes are up to date" );
-
-                return;
-            }
-
-            compilerConfiguration.setSourceFiles( staleSources );
-            
             try
             {
                 // MCOMPILER-366: if sources contain the module-descriptor it must be used to define the modulepath
@@ -872,18 +862,76 @@ public abstract class AbstractCompilerMojo
                 }
 
                 preparePaths( sources );
+
+                if (wormpexIncrementCompile) {
+                    getLog().info("开启增量变异");
+                }
+
+                SourceChangeProcessor processor = new SourceChangeProcessor(incrementalBuildHelper.getMojoStatusDirectory(), wormpexIncrementCompile);
+                Set<File> sourceToCompile = new HashSet<>();
+
+                List<FileChange> fileChanges = processor.process(compileSourceRoots, getOutputDir(compiler), getClasspathElements());
+
+                if (processor.isNeedRebuildAll()) {
+                    File outputDir = getOutputDir(compiler);
+                    new DirectoryScanner().scan(outputDir, file -> file.delete());
+                } else {
+                    for (FileChange fileChange : fileChanges) {
+                        if (fileChange.getChangeType() == ChangeType.Add) {
+                            sourceToCompile.add(fileChange.getFile());
+                        } else if (fileChange.getChangeType() == ChangeType.Mod) {
+                            sourceToCompile.add(fileChange.getFile());
+                        } else if (fileChange.getChangeType() == ChangeType.Deleted) {
+                            fileChange.getFile().delete();
+                        }
+                    }
+                }
+
+                Set<File> staleSources;
+                try
+                {
+                    staleSources =
+                            computeStaleSources( compilerConfiguration, compiler, getSourceInclusionScanner( staleMillis ) );
+
+                    canUpdateTarget = compiler.canUpdateTarget( compilerConfiguration );
+
+                    if ( compiler.getCompilerOutputStyle().equals( CompilerOutputStyle.ONE_OUTPUT_FILE_FOR_ALL_INPUT_FILES )
+                            && !canUpdateTarget )
+                    {
+                        getLog().info( "RESCANNING!" );
+                        // TODO: This second scan for source files is sub-optimal
+                        String inputFileEnding = compiler.getInputFileEnding( compilerConfiguration );
+
+                        staleSources = computeStaleSources( compilerConfiguration, compiler,
+                                getSourceInclusionScanner( inputFileEnding ) );
+                    }
+                }
+                catch ( CompilerException e )
+                {
+                    throw new MojoExecutionException( "Error while computing stale sources.", e );
+                }
+
+                if(processor.isNeedRebuildAll()){
+                    compilerConfiguration.setSourceFiles( staleSources );
+                }else {
+                    if(sourceToCompile.isEmpty()){
+                        getLog().info( "Nothing to compile - all classes are up to date" );
+                        return;
+                    }
+                    compilerConfiguration.setSourceFiles(sourceToCompile);
+                }
             }
             catch ( CompilerException e )
             {
                 throw new MojoExecutionException( "Error while computing stale sources.", e );
             }
         }
-       
+
         // Dividing pathElements of classPath and modulePath is based on sourceFiles
         compilerConfiguration.setClasspathEntries( getClasspathElements() );
 
         compilerConfiguration.setModulepathEntries( getModulepathElements() );
-        
+
         Map<String, String> effectiveCompilerArguments = getCompilerArguments();
 
         String effectiveCompilerArgument = getCompilerArgument();
@@ -924,7 +972,7 @@ public abstract class AbstractCompilerMojo
                 }
             }
         }
-        
+
         // ----------------------------------------------------------------------
         // Dump configuration
         // ----------------------------------------------------------------------
@@ -983,28 +1031,28 @@ public abstract class AbstractCompilerMojo
                 getLog().debug( ce );
             }
         }
-        
+
 
         List<String> jpmsLines = new ArrayList<>();
-        
+
         // See http://openjdk.java.net/jeps/261
-        final List<String> runtimeArgs = Arrays.asList( "--upgrade-module-path", 
+        final List<String> runtimeArgs = Arrays.asList( "--upgrade-module-path",
                                                   "--add-exports",
-                                                  "--add-reads", 
-                                                  "--add-modules", 
+                                                  "--add-reads",
+                                                  "--add-modules",
                                                   "--limit-modules" );
-        
+
         // Custom arguments are all added as keys to an ordered Map
         Iterator<Map.Entry<String, String>> entryIter =
             compilerConfiguration.getCustomCompilerArgumentsEntries().iterator();
         while ( entryIter.hasNext() )
         {
             Map.Entry<String, String> entry = entryIter.next();
-            
+
             if ( runtimeArgs.contains( entry.getKey() ) )
             {
                 jpmsLines.add( entry.getKey() );
-                
+
                 String value = entry.getValue();
                 if ( value == null )
                 {
@@ -1021,7 +1069,7 @@ public abstract class AbstractCompilerMojo
                     entry = entryIter.next();
                     value = entry.getKey();
                 }
-                
+
                 String[] values = value.split( "=" );
 
                 StringBuilder patchModule = new StringBuilder( values[0] );
@@ -1055,7 +1103,7 @@ public abstract class AbstractCompilerMojo
                     else
                     {
                         JavaModuleDescriptor descriptor = getPathElements().get( file );
-                        
+
                         if ( descriptor == null )
                         {
                             if ( Files.isDirectory( filePath ) )
@@ -1075,7 +1123,7 @@ public abstract class AbstractCompilerMojo
                 }
 
                 StringBuilder sb = new StringBuilder();
-                
+
                 if ( !patchModules.isEmpty() )
                 {
                     for ( String mod : patchModules )
@@ -1094,14 +1142,14 @@ public abstract class AbstractCompilerMojo
 
             }
         }
-        
-        if ( !jpmsLines.isEmpty() ) 
+
+        if ( !jpmsLines.isEmpty() )
         {
             Path jpmsArgs = Paths.get( getOutputDirectory().getAbsolutePath(), "META-INF/jpms.args" );
             try
             {
                 Files.createDirectories( jpmsArgs.getParent() );
-                
+
                 Files.write( jpmsArgs, jpmsLines, Charset.defaultCharset() );
             }
             catch ( IOException e )
@@ -1232,6 +1280,33 @@ public abstract class AbstractCompilerMojo
         }
         else
         {
+            Future<?> future = Executors.newSingleThreadExecutor().submit(new Runnable() {
+                @Override
+                public void run() {
+                    try {
+                        captureSnapshot(compileSourceRoots, compiler, incrementalBuildHelper.getMojoStatusDirectory(), getClasspathElements());
+                    } catch (Exception e) {
+                        System.out.println("errr");
+                    }
+                }
+            });
+            result.add(future);
+
+            List<MavenProject> projectsInOrder = session.getProjects();
+            MavenProject currentProject = session.getCurrentProject();
+            int index1 = projectsInOrder.indexOf(currentProject);
+            if(index1 == projectsInOrder.size() - 1){
+                for (Future future1 : result) {
+                    try {
+                        future1.get();
+                    } catch (InterruptedException e) {
+                        e.printStackTrace();
+                    } catch (ExecutionException e) {
+                        e.printStackTrace();
+                    }
+                }
+            }
+
             for ( CompilerMessage message : compilerResult.getCompilerMessages() )
             {
                 switch ( message.getKind() )
@@ -1418,7 +1493,7 @@ public abstract class AbstractCompilerMojo
     protected final Toolchain getToolchain()
     {
         Toolchain tc = null;
-        
+
         if ( jdkToolchain != null )
         {
             // Maven 3.3.1 has plugin execution scoped Toolchain Support
@@ -1444,12 +1519,12 @@ public abstract class AbstractCompilerMojo
                 // ignore
             }
         }
-        
+
         if ( tc == null )
         {
             tc = toolchainManager.getToolchainFromBuildContext( "jdk", session );
         }
-        
+
         return tc;
     }
 
@@ -1580,7 +1655,7 @@ public abstract class AbstractCompilerMojo
         List<String> pathElements = new ArrayList<>();
         pathElements.addAll( getClasspathElements() );
         pathElements.addAll( getModulepathElements() );
-        
+
         for ( String pathElement : pathElements )
         {
             // ProjectArtifacts are artifacts which are available in the local project
@@ -1693,14 +1768,14 @@ public abstract class AbstractCompilerMojo
         mb.a( "    <plugin>" ).newline();
         mb.a( "      <groupId>org.apache.maven.plugins</groupId>" ).newline();
         mb.a( "      <artifactId>maven-compiler-plugin</artifactId>" ).newline();
-        
+
         String version = getMavenCompilerPluginVersion();
         if ( version != null )
         {
             mb.a( "      <version>" ).a( version ).a( "</version>" ).newline();
         }
         writeConfig( mb );
-        
+
         mb.a( "    </plugin>" ).newline();
     }
 

@@ -114,7 +114,7 @@ public class CompilerMojo
     @Parameter( defaultValue = "${project.compileClasspathElements}", readonly = true, required = true )
     private List<String> compilePath;
 
-    /**
+    /**AbstractExecutionListener
      * When set to {@code true}, the classes will be placed in <code>META-INF/versions/${release}</code>
      * The release value must be set, otherwise the plugin will fail. 
      * 
