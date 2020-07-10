@@ -1,99 +1,36 @@
-<!---
- Licensed to the Apache Software Foundation (ASF) under one or more
- contributor license agreements.  See the NOTICE file distributed with
- this work for additional information regarding copyright ownership.
- The ASF licenses this file to You under the Apache License, Version 2.0
- (the "License"); you may not use this file except in compliance with
- the License.  You may obtain a copy of the License at
+通过修改maven-compiler-plugin，实现真.增量编译
 
-      http://www.apache.org/licenses/LICENSE-2.0
-
- Unless required by applicable law or agreed to in writing, software
- distributed under the License is distributed on an "AS IS" BASIS,
- WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- See the License for the specific language governing permissions and
- limitations under the License.
--->
-Contributing to [Apache Maven Compiler Plugin](https://maven.apache.org/plugins/maven-compiler-plugin/)
-======================
-
-[![ASF Jira](https://img.shields.io/endpoint?url=https%3A%2F%2Fmaven.apache.org%2Fbadges%2Fasf_jira-MCOMPILER.json)][jira]
-[![Apache License, Version 2.0, January 2004](https://img.shields.io/github/license/apache/maven.svg?label=License)][license]
-[![Maven Central](https://img.shields.io/maven-central/v/org.apache.maven.plugins/maven-compiler-plugin.svg?label=Maven%20Central)](https://search.maven.org/artifact/org.apache.maven.plugins/maven-compiler-plugin)
-[![Jenkins Status](https://img.shields.io/jenkins/s/https/builds.apache.org/job/maven-box/job/maven-compiler-plugin/job/master.svg?)][build]
-[![Jenkins tests](https://img.shields.io/jenkins/t/https/builds.apache.org/job/maven-box/job/maven-compiler-plugin/job/master.svg?)][test-results]
-
-
-You have found a bug or you have an idea for a cool new feature? Contributing
-code is a great way to give something back to the open source community. Before
-you dig right into the code, there are a few guidelines that we need
-contributors to follow so that we can have a chance of keeping on top of
-things.
-
-Getting Started
----------------
-
-+ Make sure you have a [JIRA account](https://issues.apache.org/jira/).
-+ Make sure you have a [GitHub account](https://github.com/signup/free).
-+ If you're planning to implement a new feature, it makes sense to discuss your changes 
-  on the [dev list][ml-list] first. 
-  This way you can make sure you're not wasting your time on something that isn't 
-  considered to be in Apache Maven's scope.
-+ Submit a ticket for your issue, assuming one does not already exist.
-  + Clearly describe the issue, including steps to reproduce when it is a bug.
-  + Make sure you fill in the earliest version that you know has the issue.
-+ Fork the repository on GitHub.
-
-Making and Submitting Changes
---------------
-
-We accept Pull Requests via GitHub. The [developer mailing list][ml-list] is the
-main channel of communication for contributors.  
-There are some guidelines which will make applying PRs easier for us:
-+ Create a topic branch from where you want to base your work (this is usually the master branch).
-  Push your changes to a topic branch in your fork of the repository.
-+ Make commits of logical units.
-+ Respect the original code style: by using the same [codestyle][code-style],
-  patches should only highlight the actual difference, not being disturbed by any formatting issues:
-  + Only use spaces for indentation.
-  + Create minimal diffs - disable on save actions like reformat source code or organize imports. 
-    If you feel the source code should be reformatted, create a separate PR for this change.
-  + Check for unnecessary whitespace with `git diff --check` before committing.
-+ Make sure your commit messages are in the proper format. Your commit message should contain the key of the JIRA issue.
+maven原本的增量编译基本上是废物:
 ```
-[MCOMPILER-XXX] - Subject of the JIRA Ticket
- Optional supplemental description.
+maven-compiler-plugin有个增量编译参数，打开之后的行为是如果这个模块里有一个源文件发生变动就会触发完整的编译(这是增量编译?)。如果关闭这个增量编译，这个时候的行为倒更像“增量编译”，但是这个时候有几个问题：1. 如果源文件被删除了，class是不会删除的。这个大部分时候没问题，但是和比如spring等的自动扫描不搭。2. 如果A引用了B类的一个常量，这个时候B类常量值变化了，A类没变，那么A是不会重新编译的，这当然不行。
 ```
-+ Make sure you have added the necessary tests (JUnit/IT) for your changes.
-+ Run all the tests with `mvn -Prun-its verify` to assure nothing else was accidentally broken.
-+ Submit a pull request to the repository in the Apache organization.
-+ Update your JIRA ticket and include a link to the pull request in the ticket.
+修改后的插件，每次编译完成之后会使用asm对class进行解析，解析出类之间的依赖关系，然后将其持久化到磁盘中。当下次编译的时候会首先加载上一次编译生成的依赖关系文件，然后扫描源代码目录里的*.java文件，如果该文件有变动则将依赖类也读取出来，将本次修改的以及涉及的依赖都拿出来重新编译。
+使用方法:
 
-If you plan to contribute on a regular basis, please consider filing a [contributor license agreement][cla].
+* 在pom里引入本插件
+```
+<build>
+		<pluginManagement>
+			<plugins>
+				<plugin>
+					<groupId>org.apache.maven.plugins</groupId>
+					<artifactId>maven-compiler-plugin</artifactId>
+					<version>3.9.0-SNAPSHOT</version>
+					<configuration>
+                        <!-- 关闭废物maven的增量编译 -->
+						<useIncrementalCompilation>false</useIncrementalCompilation>
+                        <!-- 打开增量编译 -->
+						<wormpexIncrementCompile>true</wormpexIncrementCompile>
+						<source>${java.source.version}</source>
+						<target>${java.target.version}</target>
+						<encoding>${file.encoding}</encoding>
+						<debug>true</debug>
+						<fork>true</fork>
+					</configuration>
+				</plugin>
+			</plugins>
+		</pluginManagement>
+	</build>
+```
 
-Making Trivial Changes
-----------------------
-
-For changes of a trivial nature to comments and documentation, it is not always
-necessary to create a new ticket in JIRA.  In this case, it is appropriate to
-start the first line of a commit with '(doc)' instead of a ticket number.
-
-Additional Resources
---------------------
-
-+ [Contributing patches](https://maven.apache.org/guides/development/guide-maven-development.html#Creating_and_submitting_a_patch)
-+ [Apache Maven Compiler JIRA project page][jira]
-+ [Contributor License Agreement][cla]
-+ [General GitHub documentation](https://help.github.com/)
-+ [GitHub pull request documentation](https://help.github.com/send-pull-requests/)
-+ [Apache Maven Twitter Account](https://twitter.com/ASFMavenProject)
-+ #Maven IRC channel on freenode.org
-
-[jira]: https://issues.apache.org/jira/projects/MCOMPILER/
-[license]: https://www.apache.org/licenses/LICENSE-2.0
-[ml-list]: http://maven.apache.org/mailing-lists.html
-[code-style]: https://maven.apache.org/developers/conventions/code.html
-[cla]: https://www.apache.org/licenses/#clas
-[maven-wiki]: https://cwiki.apache.org/confluence/display/MAVEN/Index
-[test-results]: https://builds.apache.org/job/maven-box/job/maven-compiler-plugin/job/master/lastCompletedBuild/testReport/
-[build]: https://builds.apache.org/job/maven-box/job/maven-compiler-plugin/job/master/
+* 每次编译的时候使用mvn package，不要clean
