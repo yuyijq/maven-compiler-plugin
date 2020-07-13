@@ -874,7 +874,11 @@ public abstract class AbstractCompilerMojo
 
                 if (processor.isNeedRebuildAll()) {
                     File outputDir = getOutputDir(compiler);
-                    new DirectoryScanner().scan(outputDir, file -> file.delete());
+                    new DirectoryScanner().scan(outputDir, file -> {
+                        if (file.getName().endsWith(".class")) {
+                            file.delete();
+                        }
+                    });
                 } else {
                     for (FileChange fileChange : fileChanges) {
                         if (fileChange.getChangeType() == ChangeType.Add) {
