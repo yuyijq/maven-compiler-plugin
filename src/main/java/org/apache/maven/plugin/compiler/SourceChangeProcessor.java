@@ -10,13 +10,15 @@ import java.util.stream.Collectors;
 import static org.apache.maven.plugin.compiler.Util.replaceExtension;
 
 class SourceChangeProcessor {
-    private final File snapshot;
+    private final Snapshot snapshot;
+    private final File snapshotFile;
 
     private boolean needRebuildAll;
 
-    public SourceChangeProcessor(File statusDir, boolean isIncrCompile) {
-        this.snapshot = new File(statusDir, "snapshot");
-        this.needRebuildAll = !isIncrCompile || !snapshot.exists();
+    public SourceChangeProcessor(Snapshot snapshot, File statusDir, boolean isIncrCompile) {
+        this.snapshot = snapshot;
+        this.snapshotFile = new File(statusDir, "snapshot");
+        this.needRebuildAll = !isIncrCompile || (!snapshotFile.exists() && snapshot == null);
     }
 
     public List<FileChange> process(List<String> sourceRoot, File targetDir, List<String> classPathEntries) {
@@ -24,18 +26,13 @@ class SourceChangeProcessor {
             return Collections.emptyList();
         }
 
+        Snapshot loadedSnapshot = loadSnapshot();
+        ClassPathEntryMapping classPathEntryMapping = loadedSnapshot.classPathEntryMapping;
+        SourceMapping sourceMapping = loadedSnapshot.sourceMapping;
+        ClassSetAnalysisData classSetAnalysisData = loadedSnapshot.classSetAnalysisData;
+
         List<FileChange> fileChanges = new ArrayList<>();
-        try (FileInputStream is = new FileInputStream(snapshot)) {
-            BinaryDecoder decoder = new BinaryDecoder(is);
-            ClassPathEntryMapping.Serializer classPathEntryMappingSerializer = new ClassPathEntryMapping.Serializer();
-            ClassPathEntryMapping classPathEntryMapping = classPathEntryMappingSerializer.read(decoder);
-            SourceMapping.Serializer serializer = new SourceMapping.Serializer();
-            SourceMapping sourceMapping = serializer.read(decoder);
-
-            StringInterner interner = new StringInterner();
-            ClassSetAnalysisData.Serializer classSetSerializer = new ClassSetAnalysisData.Serializer(interner);
-            ClassSetAnalysisData classSetAnalysisData = classSetSerializer.read(decoder);
-
+        try {
             Set<String> vissited = new HashSet<>();
             Set<String> changedClasses = new HashSet<>();
 
@@ -141,6 +138,26 @@ class SourceChangeProcessor {
             throw new RuntimeException(e);
         }
         return fileChanges;
+    }
+
+    private Snapshot loadSnapshot() {
+        if (this.snapshot != null) {
+            return snapshot;
+        }
+        try (FileInputStream is = new FileInputStream(snapshotFile)) {
+            BinaryDecoder decoder = new BinaryDecoder(is);
+            ClassPathEntryMapping.Serializer classPathEntryMappingSerializer = new ClassPathEntryMapping.Serializer();
+            ClassPathEntryMapping classPathEntryMapping = classPathEntryMappingSerializer.read(decoder);
+            SourceMapping.Serializer serializer = new SourceMapping.Serializer();
+            SourceMapping sourceMapping = serializer.read(decoder);
+
+            StringInterner interner = new StringInterner();
+            ClassSetAnalysisData.Serializer classSetSerializer = new ClassSetAnalysisData.Serializer(interner);
+            ClassSetAnalysisData classSetAnalysisData = classSetSerializer.read(decoder);
+            return new Snapshot(classPathEntryMapping, sourceMapping, classSetAnalysisData);
+        } catch (Exception e) {
+            throw new RuntimeException(e);
+        }
     }
 
     private Set<String> mapToTargets(Map<String, Set<String>> sourceToTargets, String source) {
